@@ -1,0 +1,692 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "tags": {
+            "type": "object",
+            "metadata": {
+                "description": "The tags that will be associated to the resources"
+            },
+            "defaultValue": {
+                "environment": "lab"
+            }
+        },
+        "uniqueData": {
+            "type": "string",
+            "metadata": {
+                "description": "Data used to append to resources to ensure uniqueness"
+            },
+            "defaultValue": "[substring(newGuid(),0,8)]"
+        },
+        "vmAdminPassword": {
+            "type": "securestring",
+            "metadata": {
+                "description": "Password for the VMs that are created"
+            }
+        },
+        "vmAdminUsername": {
+            "type": "string",
+            "metadata": {
+                "description": "Administrator name for VMs that are created"
+            }
+        },
+        "vnetCidr": {
+            "type": "string",
+            "metadata": {
+                "description": "The IP address block assigned to the virtual network"
+            }
+        },
+        "vnetSubnetCidrBastion": {
+            "type": "string",
+            "metadata": {
+                "description": "The IP address block assigned to the AzureBastion subnet in the virtual network"
+            }
+        },
+        "vnetSubnetCidrIb": {
+            "type": "string",
+            "metadata": {
+                "description": "The IP address block assigned to the subnet used by the Azure VM Image Builder in the virtual network"
+            }
+        },
+        "vnetSubnetCidrVm": {
+            "type": "string",
+            "metadata": {
+                "description": "The IP address block assigned to the subnet used by VMs provisioned in the virtual network"
+            }
+        }
+    },
+    "variables": {
+        "_apiVersionComputeGalleries": "2022-03-03",
+        "_apiVersionDiagnostics": "2017-05-01-preview",
+        "_apiVersionManagedIdentities": "2022-01-31-preview",
+        "_apiVersionNetworks": "2022-05-01",
+        "_apiVersionStorage": "2019-06-01",
+        "_apiVersionVms": "2022-08-01",
+        "_linkedTemplateLocation": "[deployment().properties.templateLink.uri]",
+        "_location": "[resourceGroup().location]",
+        "bastionName": "[concat('bst', parameters('uniqueData'))]",
+        "customScriptExtensionScriptName": "prepare-windows.ps1",
+        "customScriptExtensionScriptUrl": "[uri(variables('_linkedTemplateLocation'), concat('../scripts/', variables('customScriptExtensionScriptName')))]",
+        "galleryName": "[concat('gal', parameters('uniqueData'))]",
+        "imageNameLinux": "IBUbuntu",
+        "imageNameWindows": "IBWindows",
+        "laWorkspaceName": "[concat('la', parameters('uniqueData'))]",
+        "managedDiskType": "StandardSSD_LRS",
+        "nicAcceleratedNetworking": "true",
+        "nicNameWindowsVm": "[concat('nic', variables('vmName'))]",
+        "nsgNameBastion": "[concat('nsgbastion', parameters('uniqueData'))]",
+        "nsgNameImageBuilder": "[concat('nsgib', parameters('uniqueData'))]",
+        "nsgNameVm": "[concat('nsgvm', parameters('uniqueData'))]",
+        "publicIpNameBastion": "[concat('pip', parameters('uniqueData'))]",
+        "storageAccountName": "[concat('stib', parameters('uniqueData'))]",
+        "umiImageBuilder": "umi-ib",
+        "vmName": "[concat('vmw', parameters('uniqueData'))]",
+        "vmSku": "Standard_D4s_v5",
+        "vnetName": "[concat('vnet', parameters('uniqueData'))]",
+        "vnetStandardDdosProtection": false,
+        "vnetSubnetNameBastion": "AzureBastionSubnet",
+        "vnetSubnetNameIb": "snet-ib",
+        "vnetSubnetNameVm": "snet-vm"
+
+    },
+    "resources": [
+        {
+            "name": "[variables('umiImageBuilder')]",
+            "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+            "apiVersion": "[variables('_apiVersionManagedIdentities')]",
+            "tags": "[parameters('tags')]",
+            "location": "[variables('_location')]"
+        },
+        {
+            "name": "[variables('laWorkspaceName')]",
+            "type": "Microsoft.OperationalInsights/workspaces",
+            "apiVersion": "[variables('_apiVersionDiagnostics')]",
+            "location": "[variables('_location')]",
+            "tags": "[parameters('tags')]",
+            "properties": {
+                "sku": {
+                    "name": "PerGB2018"
+                },
+                "publicNetworkAccessForIngestion": "Enabled",
+                "publicNetworkAccessForQuery": "Enabled",
+                "retentionInDays": 30
+            },
+            "resources": []
+        },
+        {
+            "name": "[variables('storageAccountName')]",
+            "type": "Microsoft.Storage/storageAccounts",
+            "apiVersion": "[variables('_apiVersionStorage')]",
+            "location": "[variables('_location')]",
+            "tags": "[parameters('tags')]",
+            "kind": "StorageV2",
+            "sku": {
+                "name": "Standard_LRS"
+            },
+            "properties": {
+                "networkAcls": {
+                    "bypass": "AzureServices",
+                    "virtualNetworkRules": [],
+                    "ipRules": [],
+                    "defaultAction": "Allow"
+                },
+                "supportsHttpsTrafficOnly": true
+            }
+        },
+        {
+            "name": "[concat(variables('storageAccountName'),'/microsoft.insights/diag')]",
+            "type": "Microsoft.Storage/storageAccounts/providers/diagnosticSettings",
+            "apiVersion": "[variables('_apiVersionDiagnostics')]",
+            "location": "[variables('_location')]",
+            "tags": "[parameters('tags')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+            ],
+            "properties": {
+                "name": "SendToWorkspace",
+                "workspaceId": "[resourceId('Microsoft.OperationalInsights/workspaces',variables('laWorkspaceName'))]",
+                "logs": [
+                ],
+                "metrics": [
+                    {
+                        "category": "Capacity",
+                        "enabled": true
+                    },
+                    {
+                        "category": "Transaction",
+                        "enabled": true
+                    }
+                ]
+            },
+            "resources": [
+            ]
+        },
+        {
+            "name": "[concat(variables('storageAccountName'),'/default/microsoft.insights/diag')]",
+            "type": "Microsoft.Storage/storageAccounts/blobServices/providers/diagnosticSettings",
+            "apiVersion": "[variables('_apiVersionDiagnostics')]",
+            "location": "[variables('_location')]",
+            "tags": "[parameters('tags')]",
+            "dependsOn": [
+                "[concat('Microsoft.Storage/storageAccounts/',variables('storageAccountName'),'/providers/microsoft.insights/diagnosticSettings/diag')]"
+            ],
+            "properties": {
+                "name": "SendToWorkspace",
+                "workspaceId": "[resourceId('Microsoft.OperationalInsights/workspaces',variables('laWorkspaceName'))]",
+                "logs": [
+                    {
+                        "category": "StorageRead",
+                        "enabled": true
+                    },
+                    {
+                        "category": "StorageWrite",
+                        "enabled": true
+                    },
+                    {
+                        "category": "StorageDelete",
+                        "enabled": true
+                    }
+                ],
+                "metrics": [
+                    {
+                        "category": "Capacity",
+                        "enabled": true
+                    },
+                    {
+                        "category": "Transaction",
+                        "enabled": true
+                    }
+                ]
+            },
+            "resources": [
+            ]
+        },
+        {
+            "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+            "apiVersion": "[variables('_apiVersionStorage')]",
+            "name": "[concat(variables('storageAccountName'),'/default/','scripts')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+            ]
+        },
+        {
+            "name": "[variables('publicIpNameBastion')]",
+            "type": "Microsoft.Network/publicIpAddresses",
+            "apiVersion": "[variables('_apiVersionNetworks')]",
+            "location": "[variables('_location')]",
+            "tags": "[parameters('tags')]",
+            "properties": {
+                "publicIpAllocationMethod": "Static"
+            },
+            "sku": {
+                "name": "Standard"
+            }
+        },
+        {
+            "name": "[variables('galleryName')]",
+            "type": "Microsoft.Compute/galleries",
+            "apiVersion": "[variables('_apiVersionComputeGalleries')]",
+            "location": "[variables('_location')]",
+            "tags": "[parameters('tags')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('umiImageBuilder'))]"
+            ],
+            "properties": {
+                "description": "This is a demo gallery",
+                "softDeletePolicy": {
+                    "isSoftDeleteEnabled": false
+                }
+            }
+        },
+        {
+            "name": "[concat(variables('galleryName'), '/', variables('imageNameLinux'))]",
+            "type": "Microsoft.Compute/galleries/images",
+            "apiVersion": "[variables('_apiVersionComputeGalleries')]",
+            "location": "[variables('_location')]",
+            "tags": "[parameters('tags')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Compute/galleries', variables('galleryName'))]"
+            ],
+            "properties": {
+                "architecture": "x64",
+                "description": "Demo Ubuntu VM Image",
+                "disallowed": {
+                    "diskTypes": [
+                        "Standard_LRS"
+                    ]
+                },
+                "hyperVGeneration": "V1",
+                "identifier": {
+                    "publisher": "DemoOrg",
+                    "offer": "0001-com-ubuntu-server-focal",
+                    "sku": "20_04-lts-gen2"
+                },
+                "osState": "Generalized",
+                "osType": "Linux",
+                "recommended": {
+                    "memory": {
+                        "max": 32,
+                        "min": 4
+                    },
+                    "vCpUs": {
+                        "max": 16,
+                        "min": 2
+                    }
+                }
+            }
+
+        },
+        {
+            "name": "[concat(variables('galleryName'), '/', variables('imageNameWindows'))]",
+            "type": "Microsoft.Compute/galleries/images",
+            "apiVersion": "[variables('_apiVersionComputeGalleries')]",
+            "location": "[variables('_location')]",
+            "tags": "[parameters('tags')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Compute/galleries', variables('galleryName'))]",
+                "[resourceId('Microsoft.Compute/galleries/images', variables('galleryName'), variables('imageNameLinux'))]"
+            ],
+            "properties": {
+                "architecture": "x64",
+                "description": "Demo Windows VM Image",
+                "disallowed": {
+                    "diskTypes": [
+                        "Standard_LRS"
+                    ]
+                },
+                "hyperVGeneration": "V1",
+                "identifier": {
+                    "publisher": "DemoOrg",
+                    "offer": "WindowsServer",
+                    "sku": "2019-Datacenter"
+                },
+                "osState": "Generalized",
+                "osType": "Windows",
+                "recommended": {
+                    "memory": {
+                        "max": 32,
+                        "min": 4
+                    },
+                    "vCpUs": {
+                        "max": 16,
+                        "min": 2
+                    }
+                }
+            }
+        },
+        {
+            "name": "[variables('nsgNameBastion')]",
+            "type": "Microsoft.Network/networkSecurityGroups",
+            "apiVersion": "[variables('_apiVersionNetworks')]",
+            "location": "[variables('_location')]",
+            "tags": "[parameters('tags')]",
+            "properties": {
+                "securityRules": [
+                    {
+                        "name": "AllowHttps",
+                        "properties": {
+                            "description": "Allow incoming HTTPS traffic from Internet",
+                            "protocol": "Tcp",
+                            "sourcePortRange": "*",
+                            "destinationPortRange": "443",
+                            "sourceAddressPrefix": "Internet",
+                            "destinationAddressPrefix": "*",
+                            "access": "Allow",
+                            "priority": 1000,
+                            "direction": "Inbound"
+                        }
+                    },
+                    {
+                        "name": "AllowControlPlane",
+                        "properties": {
+                            "description": "Allow control plane traffic",
+                            "protocol": "Tcp",
+                            "sourcePortRange": "*",
+                            "destinationPortRanges": [
+                                "443"
+                            ],
+                            "sourceAddressPrefix": "GatewayManager",
+                            "destinationAddressPrefix": "*",
+                            "access": "Allow",
+                            "priority": 1001,
+                            "direction": "Inbound"
+                        }
+                    },
+                    {
+                        "name": "AllowDataPlane",
+                        "properties": {
+                            "description": "Allows Azure Bastion data plane traffic",
+                            "protocol": "*",
+                            "sourcePortRange": "*",
+                            "destinationPortRanges": [
+                                "8080",
+                                "5701"
+                            ],
+                            "sourceAddressPrefix": "VirtualNetwork",
+                            "destinationAddressPrefix": "VirtualNetwork",
+                            "access": "Allow",
+                            "priority": 1002,
+                            "direction": "Inbound"
+                        }
+                    },
+                    {
+                        "name": "AllowHealthProbes",
+                        "properties": {
+                            "description": "Allows health probes from Azure Load Balancer",
+                            "protocol": "Tcp",
+                            "sourcePortRange": "*",
+                            "destinationPortRange": "443",
+                            "sourceAddressPrefix": "AzureLoadBalancer",
+                            "destinationAddressPrefix": "*",
+                            "access": "Allow",
+                            "priority": 1003,
+                            "direction": "Inbound"
+                        }
+                    },
+                    {
+                        "name": "DenyAllInbound",
+                        "properties": {
+                            "description": "Deny all inbound traffic",
+                            "protocol": "*",
+                            "sourcePortRange": "*",
+                            "destinationPortRange": "*",
+                            "sourceAddressPrefix": "*",
+                            "destinationAddressPrefix": "*",
+                            "access": "Deny",
+                            "priority": 2000,
+                            "direction": "Inbound"
+                        }
+                    },
+                    {
+                        "name": "AllowOutboundDataPlane",
+                        "properties": {
+                            "description": "Allows Azure Bastion data plane traffic",
+                            "protocol": "*",
+                            "sourcePortRange": "*",
+                            "destinationPortRanges": [
+                                "8080",
+                                "5701"
+                            ],
+                            "sourceAddressPrefix": "*",
+                            "destinationAddressPrefix": "AzureCloud",
+                            "access": "Allow",
+                            "priority": 1000,
+                            "direction": "Outbound"
+                        }
+                    },
+                    {
+                        "name": "AllowOutboundAzureCloud",
+                        "properties": {
+                            "description": "Allows Bastion hosts to communicate with management components",
+                            "protocol": "Tcp",
+                            "sourcePortRange": "*",
+                            "destinationPortRange": "443",
+                            "sourceAddressPrefix": "*",
+                            "destinationAddressPrefix": "AzureCloud",
+                            "access": "Allow",
+                            "priority": 1001,
+                            "direction": "Outbound"
+                        }
+                    },
+                    {
+                        "name": "AllowOutboundInternet",
+                        "properties": {
+                            "description": "Allows Bastion to validate certificates",
+                            "protocol": "*",
+                            "sourcePortRange": "*",
+                            "destinationPortRange": "80",
+                            "sourceAddressPrefix": "*",
+                            "destinationAddressPrefix": "*",
+                            "access": "Allow",
+                            "priority": 1002,
+                            "direction": "Outbound"
+                        }
+                    },
+                    {
+                        "name": "AllowOutboundVirtualNetwork",
+                        "properties": {
+                            "description": "Allows Bastion to connect to VMs over SSH and RDP",
+                            "protocol": "*",
+                            "sourcePortRange": "*",
+                            "destinationPortRanges": [
+                                "3389",
+                                "22"
+                            ],
+                            "sourceAddressPrefix": "*",
+                            "destinationAddressPrefix": "VirtualNetwork",
+                            "access": "Allow",
+                            "priority": 1003,
+                            "direction": "Outbound"
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "name": "[variables('nsgNameImageBuilder')]",
+            "type": "Microsoft.Network/networkSecurityGroups",
+            "apiVersion": "[variables('_apiVersionNetworks')]",
+            "location": "[variables('_location')]",
+            "tags": "[parameters('tags')]",
+            "properties": {
+                "securityRules": [
+                ]
+            }
+        },
+        {
+            "name": "[variables('nsgNameVm')]",
+            "type": "Microsoft.Network/networkSecurityGroups",
+            "apiVersion": "[variables('_apiVersionNetworks')]",
+            "location": "[variables('_location')]",
+            "tags": "[parameters('tags')]",
+            "properties": {
+                "securityRules": [
+                ]
+            }
+        },
+        {
+            "type": "Microsoft.Network/virtualNetworks",
+            "name": "[variables('vnetName')]",
+            "apiVersion": "[variables('_apiVersionNetworks')]",
+            "location": "[variables('_location')]",
+            "tags": "[parameters('tags')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgNameBastion'))]",
+                "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgNameImageBuilder'))]",
+                "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgNameVm'))]"
+            ],
+            "properties": {
+                "addressSpace": {
+                    "addressPrefixes": [
+                        "[parameters('vnetCidr')]"
+                    ]
+                },
+                "subnets": [
+                    {
+                        "name": "[variables('vnetSubnetNameBastion')]",
+                        "properties": {
+                            "addressPrefix": "[parameters('vnetSubnetCidrBastion')]",
+                            "networkSecurityGroup": {
+                                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgNameBastion'))]"
+                            },
+                            "privateEndpointNetworkPolicies": "Enabled"
+                        }
+                    },
+                    {
+                        "name": "[variables('vnetSubnetNameIb')]",
+                        "properties": {
+                            "addressPrefix": "[parameters('vnetSubnetCidrIb')]",
+                            "networkSecurityGroup": {
+                                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgNameImageBuilder'))]"
+                            },
+                            "privateLinkServiceNetworkPolicies": "Disabled"
+                        }
+                    },
+                    {
+                        "name": "[variables('vnetSubnetNameVm')]",
+                        "properties": {
+                            "addressPrefix": "[parameters('vnetSubnetCidrVm')]",
+                            "networkSecurityGroup": {
+                                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgNameVm'))]"
+                            },
+                            "privateEndpointNetworkPolicies": "Enabled"
+                        }
+                    }
+                ],
+                "enableDdosProtection": "[variables('vnetStandardDdosProtection')]"
+            }
+        },
+        {
+            "name": "[variables('bastionName')]",
+            "type": "Microsoft.Network/bastionHosts",
+            "apiVersion": "[variables('_apiVersionNetworks')]",
+            "location": "[variables('_location')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/publicIpAddresses', variables('publicIpNameBastion'))]",
+                "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+            ],
+            "tags": "[parameters('tags')]",
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": "bastionConfig",
+                        "properties": {
+                            "subnet": {
+                                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('vnetSubnetNameBastion'))]"
+                            },
+                            "publicIPAddress": {
+                                "id": "[resourceId('Microsoft.Network/publicIpAddresses', variables('publicIpNameBastion'))]"
+                            },
+                            "privateIPAllocationMethod": "Dynamic"
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "name": "[concat(variables('bastionName'),'/microsoft.insights/diag')]",
+            "type": "Microsoft.Network/bastionHosts/providers/diagnosticSettings",
+            "apiVersion": "[variables('_apiVersionDiagnostics')]",
+            "location": "[variables('_location')]",
+            "tags": "[parameters('tags')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/bastionHosts',variables('bastionName'))]"
+            ],
+            "properties": {
+                "name": "SendToWorkspace",
+                "workspaceId": "[resourceId('Microsoft.OperationalInsights/workspaces',variables('laWorkspaceName'))]",
+                "logs": [
+                    {
+                        "category": "BastionAuditLogs",
+                        "enabled": true
+                    }
+                ],
+                "metrics": [
+                ]
+            },
+            "resources": [
+            ]
+        },
+        {
+            "name": "[variables('nicNameWindowsVm')]",
+            "type": "Microsoft.Network/networkInterfaces",
+            "apiVersion": "[variables('_apiVersionNetworks')]",
+            "location": "[variables('_location')]",
+            "tags": "[parameters('tags')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+            ],
+            "properties": {
+                "enableAcceleratedNetworking": "[variables('nicAcceleratedNetworking')]",
+                "ipConfigurations": [
+                    {
+                        "name": "ipconfig1",
+                        "properties": {
+                            "privateIPAllocationMethod": "Dynamic",
+                            "subnet": {
+                                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets',variables('vnetName'),variables('vnetSubnetNameVm'))]"
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "name": "[variables('vmName')]",
+            "type": "Microsoft.Compute/virtualMachines",
+            "apiVersion": "[variables('_apiVersionVms')]",
+            "location": "[variables('_location')]",
+            "tags": "[parameters('tags')]",
+            "dependsOn": [
+                "[concat('Microsoft.Network/networkInterfaces/', variables('nicNameWindowsVm'))]"
+            ],
+            "properties": {
+                "diagnosticsProfile": {
+                    "bootDiagnostics": {
+                        "enabled": true
+                    }
+                },
+                "hardwareProfile": {
+                    "vmSize": "[variables('vmSku')]"
+                },
+                "networkProfile": {
+                    "networkInterfaces": [
+                        {
+                            "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('nicNameWindowsVm'))]"
+                        }
+                    ]
+                },
+                "osProfile": {
+                    "computerName": "[variables('vmName')]",
+                    "adminUsername": "[parameters('vmAdminUsername')]",
+                    "adminPassword": "[parameters('vmAdminPassword')]",
+                    "windowsConfiguration": {
+                        "enableAutomaticUpdates": true,
+                        "provisionVmAgent": true
+                    }
+                },
+                "storageProfile": {
+                    "osDisk": {
+                        "createOption": "fromImage",
+                        "managedDisk": {
+                            "storageAccountType": "[variables('managedDiskType')]"
+                        }
+                    },
+                    "imageReference": {
+                        "publisher": "MicrosoftWindowsServer",
+                        "offer": "WindowsServer",
+                        "sku": "2019-Datacenter",
+                        "version": "latest"
+                    }
+                }
+            },
+            "resources": [
+                {
+                    "type": "extensions",
+                    "name": "CustomScriptExtension",
+                    "apiVersion": "[variables('_apiVersionVms')]",
+                    "location": "[variables('_location')]",
+                    "dependsOn": [
+                        "[concat('Microsoft.Compute/virtualMachines/', variables('vmName'))]"
+                    ],
+                    "properties": {
+                        "publisher": "Microsoft.Compute",
+                        "type": "CustomScriptExtension",
+                        "typeHandlerVersion": "1.10",
+                        "autoUpgradeMinorVersion": true,
+                        "settings": {
+                            "fileUris": [
+                                "[variables('customScriptExtensionScriptUrl')]"
+                            ]
+                        },
+                        "protectedSettings": {
+                            "commandToExecute": "[concat('powershell.exe -Command \"./', variables('customScriptExtensionScriptName'), '; exit 0;\"')]"
+                        }   
+                    }
+                }
+            ]
+        }
+    ],
+    "outputs": {
+    }
+}

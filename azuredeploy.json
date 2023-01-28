@@ -1,0 +1,143 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "location": {
+            "type": "string",
+            "metadata": {
+                "description": "The location to deploy the resources. Modify template to allow additional regions"
+            },
+            "allowedValues": [
+                "centralus",
+                "eastus",
+                "eastus2",
+                "northcentralus",
+                "southcentralus",
+                "westcentralus",
+                "westus",
+                "westus2"
+            ]
+        },
+        "vmAdminUsername": {
+            "type": "string",
+            "metadata": {
+                "description": "Administrator name for VMs that are created"
+            }
+        },
+        "vmAdminPassword": {
+            "type": "securestring",
+            "metadata": {
+                "description": "Password for the VMs that are created"
+            }
+        },
+        "tags": {
+            "type": "object",
+            "metadata": {
+                "description": "The tags that wil be associated to the resources"
+            },
+            "defaultValue": {
+                "environment": "demo"
+            }
+        },
+        "uniqueData": {
+            "type": "string",
+            "metadata": {
+                "description": "Creates a new GUID to create uniqueness for resources"
+            },
+            "defaultValue": "[substring(newGuid(),0,8)]"
+        }
+    },
+    "variables": {
+        "_apiVersionResources": "2020-06-01",
+        "deploymentNameRes": "deploy-demo-resources",
+        "deploymentNameRgs": "deploy-demo-rgs",
+        "rgNameIb": "[concat('rgib', parameters('uniqueData'))]",
+        "rgNameIbBuild": "[concat('rgibbuild', parameters('uniqueData'))]",
+        "templateUriResources": "[concat(uri(deployment().properties.templateLink.uri,'templates/deploy-resources.json'))]",
+        "vnetCidr": "10.0.0.0/16",
+        "vnetSubnetCidrBastion": "10.0.0.0/24",
+        "vnetSubnetCidrIb": "10.0.1.0/24",
+        "vnetSubnetCidrVm": "10.0.2.0/24"
+    },
+    "resources": [
+        {
+            "name": "[variables('deploymentNameRgs')]",
+            "type": "Microsoft.Resources/deployments",
+            "apiVersion": "[variables('_apiVersionResources')]",
+            "location": "[parameters('location')]",
+            "subscriptionId": "[subscription().subscriptionId]",
+            "properties": {
+                "mode": "Incremental",
+                "template": {
+                    "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+                    "contentVersion": "1.0.0.0",
+                    "resources": [
+                        {
+                            "name": "[variables('rgNameIb')]",
+                            "type": "Microsoft.Resources/resourceGroups",
+                            "apiVersion": "[variables('_apiVersionResources')]",
+                            "location": "[parameters('location')]",
+                            "tags": "[parameters('tags')]",
+                            "properties": {
+                            }
+                        },
+                        {
+                            "name": "[variables('rgNameIbBuild')]",
+                            "type": "Microsoft.Resources/resourceGroups",
+                            "apiVersion": "[variables('_apiVersionResources')]",
+                            "location": "[parameters('location')]",
+                            "tags": "[parameters('tags')]",
+                            "properties": {
+                            }
+                        }
+                    ]
+                }
+            }
+        },
+        {
+            "name": "[variables('deploymentNameRes')]",
+            "type": "Microsoft.Resources/deployments",
+            "apiVersion": "[variables('_apiVersionResources')]",
+            "subscriptionId": "[subscription().subscriptionId]",
+            "resourceGroup": "[variables('rgNameIb')]",
+            "dependsOn": [
+                "[concat('Microsoft.Resources/deployments/', variables('deploymentNameRgs'))]"
+            ],
+            "properties": {
+                "mode": "Incremental",
+                "parameters": {
+                    "tags": {
+                        "value": "[parameters('tags')]"
+                    },
+                    "uniqueData": {
+                        "value": "[parameters('uniqueData')]"
+                    },
+                    "vmAdminPassword": {
+                        "value": "[parameters('vmAdminPassword')]"
+                    },
+                    "vmAdminUsername": {
+                        "value": "[parameters('vmAdminUsername')]"
+                    },
+                    "vnetName": {
+                        "value": "[variables('vnetCidr')]"
+                    },
+                    "vnetSubnetNameBastion": {
+                        "value": "[variables('vnetSubnetCidrBastion')]"
+                    },
+                    "vnetSubnetNameIb": {
+                        "value": "[variables('vnetSubnetCidrIb')]"
+                    },
+                    "vnetSubnetNameVm": {
+                        "value": "[variables('vnetSubnetCidrVm')]"
+                    }
+                },
+                "templateLink": {
+                    "uri": "[variables('templateUriResources')]",
+                    "contentVersion": "1.0.0.0"
+                }
+            }
+        }
+    ],
+    "outputs": {
+    }
+}
