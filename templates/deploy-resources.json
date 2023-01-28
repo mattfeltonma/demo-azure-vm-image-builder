@@ -2,6 +2,12 @@
     "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
     "contentVersion": "1.0.0.0",
     "parameters": {
+        "rgNameImageBuilder": {
+            "type": "string",
+            "metadata": {
+                "description": "The name of the resource group the Image Builder will use to build images"
+            }
+        },
         "tags": {
             "type": "object",
             "metadata": {
@@ -60,6 +66,8 @@
         "_apiVersionDiagnostics": "2017-05-01-preview",
         "_apiVersionManagedIdentities": "2022-01-31-preview",
         "_apiVersionNetworks": "2022-05-01",
+        "_apiVersionRbac": "2022-06-01",
+        "_apiVersionResources": "2020-06-01",
         "_apiVersionStorage": "2019-06-01",
         "_apiVersionVms": "2022-08-01",
         "_linkedTemplateLocation": "[deployment().properties.templateLink.uri]",
@@ -67,6 +75,7 @@
         "bastionName": "[concat('bst', parameters('uniqueData'))]",
         "customScriptExtensionScriptName": "prepare-windows.ps1",
         "customScriptExtensionScriptUrl": "[uri(variables('_linkedTemplateLocation'), concat('../scripts/', variables('customScriptExtensionScriptName')))]",
+        "deploymentNameRoleAssignmentIb": "deploy-rbac-assignment-ib",
         "galleryName": "[concat('gal', parameters('uniqueData'))]",
         "imageNameLinux": "IBUbuntu",
         "imageNameWindows": "IBWindows",
@@ -78,6 +87,9 @@
         "nsgNameImageBuilder": "[concat('nsgib', parameters('uniqueData'))]",
         "nsgNameVm": "[concat('nsgvm', parameters('uniqueData'))]",
         "publicIpNameBastion": "[concat('pip', parameters('uniqueData'))]",
+        "roleAssignmentGuidResRg": "[guid(resourceGroup().id, variables('umiImageBuilder'))]",
+        "roleAssignmentGuidBuildRg": "[guid(resourceGroup().id, parameters('rgNameImageBuilder'))]",
+        "roleIdContributor": "b24988ac-6180-42a0-ab88-20f7382dd24c",
         "storageAccountName": "[concat('stib', parameters('uniqueData'))]",
         "umiImageBuilder": "umi-ib",
         "vmName": "[concat('vmw', parameters('uniqueData'))]",
@@ -681,10 +693,52 @@
                         },
                         "protectedSettings": {
                             "commandToExecute": "[concat('powershell.exe -Command \"./', variables('customScriptExtensionScriptName'), '; exit 0;\"')]"
-                        }   
+                        }
                     }
                 }
             ]
+        },
+        {
+            "type": "Microsoft.Authorization/roleAssignments",
+            "apiVersion": "[variables('_apiVersionRbac')]",
+            "name": "[variables('roleAssignmentGuidResRg')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/bastionHosts', variables('bastionName'))]"
+            ],
+            "properties": {
+                "roleDefinitionId": "[resourceId('Microsoft.Authorization/roleDefinitions', variables('roleIdContributor'))]",
+                "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('umiImageBuilder'))).principalId]",
+                "principalType": "ServicePrincipal"
+            }
+        },
+        {
+            "name": "[variables('deploymentNameRoleAssignmentIb')]",
+            "type": "Microsoft.Resources/deployments",
+            "apiVersion": "[variables('_apiVersionResources')]",
+            "subscriptionId": "[subscription().subscriptionId]",
+            "resourceGroup": "[parameters('rgNameImageBuilder')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/bastionHosts', variables('bastionName'))]"
+            ],
+            "properties": {
+                "mode": "Incremental",
+                "template": {
+                    "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+                    "contentVersion": "1.0.0.0",
+                    "resources": [
+                        {
+                            "type": "Microsoft.Authorization/roleAssignments",
+                            "apiVersion": "[variables('_apiVersionRbac')]",
+                            "name": "[variables('roleAssignmentGuidBuildRg')]",
+                            "properties": {
+                                "roleDefinitionId": "[resourceId(parameters('rgNameImageBuilder'),'Microsoft.Authorization/roleDefinitions', variables('roleIdContributor'))]",
+                                "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('umiImageBuilder'))).principalId]",
+                                "principalType": "ServicePrincipal"
+                            }
+                        }
+                    ]
+                }
+            }
         }
     ],
     "outputs": {

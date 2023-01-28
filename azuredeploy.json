@@ -106,6 +106,9 @@
             "properties": {
                 "mode": "Incremental",
                 "parameters": {
+                    "rgNameImageBuilder": {
+                        "value": "[variables('rgNameIbBuild')]"
+                    },
                     "tags": {
                         "value": "[parameters('tags')]"
                     },
